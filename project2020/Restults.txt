@@ -1,0 +1,6 @@
+Test, Result Name, Result Value, Comment
+OpenSSL Compatibility Test, test.txt.enc128, MISMATCH, 
+OpenSSL Compatibility Test, test.txt.dec128, OK, 
+OpenSSL Compatibility Test, test.txt.enc256, MISMATCH, 
+OpenSSL Compatibility Test, test.txt.dec256, OK, 
+File Size Test, File Size, 4554900, bytes

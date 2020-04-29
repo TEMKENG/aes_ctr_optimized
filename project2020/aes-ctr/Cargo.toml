@@ -1,0 +1,15 @@
+[package]
+name = "aes-ctr"
+version = "0.1.0"
+authors = ["Rust Student"]
+edition = "2018"
+
+[profile.release]
+lto = true
+panic = 'abort'
+
+[dependencies]
+structopt = "0.3.12"
+hex = "0.4.2"
+
+numrs = "0.2.0"

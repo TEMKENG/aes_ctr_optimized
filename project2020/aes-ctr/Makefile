@@ -1,0 +1,2 @@
+all:
+	cargo run -- -c encrypt -i testdatei.tmp -v 12345678901234567890123456789012 -k 12345678901234567890123456789012 -o ./test.output
