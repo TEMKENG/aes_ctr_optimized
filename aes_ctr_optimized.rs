@@ -324,7 +324,9 @@ pub fn handle_aes_ctr_command(
     let blocks_bytes: Vec<u8> = reader(input_file_path).ok().unwrap();
 
     let offset: usize = 16;
-    let nbs: usize = blocks_bytes.len() / offset; //16*2
+    let len:usize = blocks_bytes.len();
+    let nbs: usize = len / offset; //16*2
+    let rest: usize = len % offset;
     println!("Text lesen und in Bloeke aufteilen.");
     let zeros: Vec<u8> = vec![0; 16];
     let mut results = vec![zeros.clone()];
@@ -395,6 +397,20 @@ pub fn handle_aes_ctr_command(
         //~ add_round_keys(&mut input, &to2d(&pt));
         //~ results[i] =input;
     }
+    if rest != 0{
+        iv_in = ctr128_inc(&iv_in, 1 as u64);
+        let mut input = rot(&to2d(&iv_in));
+        cipher(&mut input, &keys, nr, &sbox);
+        let mut my:Vec<u8> = rot(&input).into_iter().flatten().collect();
+        let pt: Vec<u8> = blocks_bytes[nbs * offset..].to_vec();
+        my = my[0..rest].to_vec();
+        results.push(xor_for_vec(&my, &pt));
+
+
+
+
+    }
+
     let duration = start.elapsed();
     println!("End= {:?}", duration);
     //~ for handle in handle_vec {                         // wait for all threads to finish
