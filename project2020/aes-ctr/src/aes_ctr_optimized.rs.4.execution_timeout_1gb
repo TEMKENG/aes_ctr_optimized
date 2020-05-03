@@ -244,16 +244,14 @@ pub fn handle_aes_ctr_command(
     let mut block_len:u64;
     let mut nbs: u64;
     let mut number_of_blocks: u64=0;
-    
-    for j in 0..1{
-		// block_len = 2048/hoch2(j+1); 
-        block_len = 1024*1024*256*4;
+    for j in 0..5{
+		block_len = 256/hoch2(j+1); 
 		nbs = rest as u64 / block_len ;  // Anzahl von Bloecken
 		rest = (rest % block_len as usize) as usize;
-		for _ in 0..nbs{
-			let t_data = reader(&input_file_path, number_of_blocks * 16, block_len as usize).ok().unwrap(); // number of blocks block_len/16
-			block_cipher(&t_data, &output_file_path, number_of_blocks, &sbox, &keys, &iv_bytes, nr);
-			number_of_blocks += block_len/16;
+    for _ in 0..nbs{
+		let t_data = reader(&input_file_path, number_of_blocks * 16, block_len as usize).ok().unwrap(); // number of blocks block_len/16
+		block_cipher(&t_data, &output_file_path, number_of_blocks, &sbox, &keys, &iv_bytes, nr);
+		number_of_blocks += block_len/16;
 		}
 
 		if rest ==0{break}
@@ -298,53 +296,37 @@ fn block_cipher(t_data: &Vec<u8>, output_file_path: &PathBuf, index: u64, sbox: 
 		
 		let offset: usize = 16;
 		let nbt = (t_data.len() / offset) as u64;  //Thread Anzahl
-        let factor:usize = 65536 * 128; // handling 512 MB each thread
-		let zeros: Vec<u8> = vec![0; 16 * factor];
-        let thread_quantity = (nbt as usize)/factor;
+		let zeros: Vec<u8> = vec![0; 16];
 		let mut results:Vec<Vec<u8>> = vec![zeros.clone()];
-		results.resize(thread_quantity, zeros);
-		// let results = Arc::new(Mutex::new(results));
+		results.resize(nbt as usize, zeros);
+		let results = Arc::new(Mutex::new(results));
 		let mut handle_vec = vec![];
-		for i in 0..thread_quantity  {
-		//~ for i in 0..nbt as usize {
+		for i in 0..nbt as usize {
 			//~ Klone Daten
 			let sbox = sbox.clone();
 			let keys = keys.clone();
 			let t_data = t_data.clone();
-			// let results = Arc::clone(&results);
+			let results = Arc::clone(&results);
 			let iv_bytes = iv_bytes.clone();
 			
 			//~ aes parallele ausführen
 			let handle = thread::spawn(move || { 
-                let mut result_teil:Vec<Vec<u8>> = Vec::new();
-				for k in 0..factor{
-					let mut input = to2d(&ctr128_inc(&iv_bytes, index + (i*factor +k) as u64));
-					aes(&mut input, &keys, nr, &sbox);
-					// mprint(&input);
-					let cipher:Vec<u8> = input.clone().into_iter().flatten().collect();
-					let inde:usize = (16*(i*factor + k)) as usize;
-					let pt:Vec<u8> = t_data[inde..inde + 16].to_vec();
-					// let mut results = results.lock().unwrap();
-					// results[i*factor +k as usize] = xor_for_vec(&cipher, &pt);
-                    result_teil.push(xor_for_vec(&cipher, &pt));
-
-
-
-                }
-                (i, result_teil)
-
-        });
+				let mut input = to2d(&ctr128_inc(&iv_bytes, index + i as u64));
+				aes(&mut input, &keys, nr, &sbox);
+				mprint(&input);
+				let cipher:Vec<u8> = input.clone().into_iter().flatten().collect();
+				let inde:usize = 16*i as usize;
+				let pt:Vec<u8> = t_data[inde..inde + 16].to_vec();
+				let mut results = results.lock().unwrap();
+				results[i as usize] = xor_for_vec(&cipher, &pt);
+			});
 			handle_vec.push(handle);
-
 		}
 		//~ Threads warten und beenden.
 		for handle in handle_vec{
-			let return_result = handle.join().unwrap();
-            // copy_nonoverlapping(handle.join().unwrap(result_teil), &results+handle.join().unwrap(i)*buffer_groese , factor*16)
-            let result: Vec<u8> = return_result.1.iter().flatten().cloned().collect();
-            results[return_result.0] = result;
+			handle.join().unwrap();
 		}
-		// let results = &*results.lock().unwrap();
+		let results = &*results.lock().unwrap();
 		//~ Teilergernisse hinzufügen
 		let result: Vec<u8> = results.iter().flatten().cloned().collect();
 		if !std::path::Path::new(&output_file_path).exists(){
