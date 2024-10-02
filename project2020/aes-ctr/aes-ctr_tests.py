@@ -7,6 +7,7 @@ import subprocess
 import re
 import secrets
 from tqdm import tqdm
+from icecream import ic
 
 # Print usage
 def print_usage():
@@ -21,11 +22,9 @@ def test_openssl_compatibility(exec_path, result_file):
     print('--- Performing >>', test_name, '<< ...')
     # Create test directories
     openssl_tmp_dir = './tmp-openssl/'
-    if not os.path.exists(openssl_tmp_dir):
-        os.mkdir(openssl_tmp_dir)
     aes_ctr_tmp_dir = './tmp-aes-ctr/'
-    if not os.path.exists(aes_ctr_tmp_dir):
-        os.mkdir(aes_ctr_tmp_dir)
+    os.makedirs(openssl_tmp_dir, exist_ok=True)
+    os.makedirs(aes_ctr_tmp_dir, exist_ok=True)
     # Initialize test data
     key_128 = '000102030405060708090a0b0c0d0e0f'
     key_256 = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
@@ -40,7 +39,9 @@ def test_openssl_compatibility(exec_path, result_file):
     # Perform commands with openssl tool
     with open(openssl_tmp_dir + 'test.txt', 'w') as f: 
         f.write(data)
+    
     openssl_cmd = 'openssl enc -aes-128-ctr -K ' + key_128 + ' -iv ' + iv + ' -in ' + test_file + ' -out ' + test_enc128_file
+    print(openssl_cmd)
     subprocess.run(openssl_cmd.split(' '), cwd=openssl_tmp_dir, capture_output=True, text=True)
     openssl_cmd = 'openssl enc -d -aes-128-ctr -K ' + key_128 + ' -iv ' + iv + ' -in ' + test_enc128_file + ' -out ' + test_dec128_file
     subprocess.run(openssl_cmd.split(' '), cwd=openssl_tmp_dir, capture_output=True, text=True)
@@ -51,13 +52,14 @@ def test_openssl_compatibility(exec_path, result_file):
     # Perform command with executable under test and compare
     with open(aes_ctr_tmp_dir + 'test.txt', 'w') as f: 
         f.write(data)
-    aes_ctr_cmd = '../' + exec_path + ' -c encrypt -k ' + key_128 + ' -v ' + iv + ' -i ' + test_file + ' -o ' + test_enc128_file
+    aes_ctr_cmd = './' + exec_path + ' -c encrypt -k ' + key_128 + ' -v ' + iv + ' -i ' + test_file + ' -o ' + test_enc128_file
+    foo = subprocess.run(aes_ctr_cmd.split(' '), cwd=aes_ctr_tmp_dir, capture_output=True, text=True)
+    print(foo.stdout)
+    aes_ctr_cmd = './' + exec_path + ' -c decrypt -k ' + key_128 + ' -v ' + iv + ' -i ' + test_enc128_file + ' -o ' + test_dec128_file
     subprocess.run(aes_ctr_cmd.split(' '), cwd=aes_ctr_tmp_dir, capture_output=True, text=True)
-    aes_ctr_cmd = '../' + exec_path + ' -c decrypt -k ' + key_128 + ' -v ' + iv + ' -i ' + test_enc128_file + ' -o ' + test_dec128_file
+    aes_ctr_cmd = './' + exec_path + ' -c encrypt -k ' + key_256 + ' -v ' + iv + ' -i ' + test_file + ' -o ' + test_enc256_file
     subprocess.run(aes_ctr_cmd.split(' '), cwd=aes_ctr_tmp_dir, capture_output=True, text=True)
-    aes_ctr_cmd = '../' + exec_path + ' -c encrypt -k ' + key_256 + ' -v ' + iv + ' -i ' + test_file + ' -o ' + test_enc256_file
-    subprocess.run(aes_ctr_cmd.split(' '), cwd=aes_ctr_tmp_dir, capture_output=True, text=True)
-    aes_ctr_cmd = '../' + exec_path + ' -c decrypt -k ' + key_256 + ' -v ' + iv + ' -i ' + test_enc256_file + ' -o ' + test_dec256_file
+    aes_ctr_cmd = './' + exec_path + ' -c decrypt -k ' + key_256 + ' -v ' + iv + ' -i ' + test_enc256_file + ' -o ' + test_dec256_file
     subprocess.run(aes_ctr_cmd.split(' '), cwd=aes_ctr_tmp_dir, capture_output=True, text=True)
     # Compare files
     list_of_files = [
@@ -89,15 +91,50 @@ def get_file_size(exec_path, result_file):
 def get_section_sizes(exec_path, result_file):
     test_name = 'Section Sizes Test'
     print('--- Performing >>', test_name, '<< ...')
-    size = subprocess.run(['size', '-A', exec_path], cwd='./', capture_output=True, text=True)
-    size_text_sec = re.search('\.text\s+([0-9]+)', size.stdout).group(1)
-    size_rodata_sec = re.search('\.rodata\s+([0-9]+)', size.stdout).group(1)
-    size_data_sec = re.search('\.data\s+([0-9]+)', size.stdout).group(1)
-    size_bss_sec = re.search('\.bss\s+([0-9]+)', size.stdout).group(1)
-    result_file.write(test_name + ', .text, ' + size_text_sec + ', bytes\n')
-    result_file.write(test_name + ', .rodata, ' + size_rodata_sec + ', bytes\n')
-    result_file.write(test_name + ', .data, ' + size_data_sec + ', bytes\n')
-    result_file.write(test_name + ', .bss, ' + size_bss_sec + ', bytes\n')
+    print('--- Performing >>', exec_path, '<< ...')
+    # size = subprocess.run(['size', '-A', exec_path], cwd='./', capture_output=True, text=True)
+    
+    # size_text_sec = re.search('\.text\s+([0-9]+)', size.stdout).group(1)
+    # size_rodata_sec = re.search('\.rodata\s+([0-9]+)', size.stdout).group(1)
+    # size_data_sec = re.search('\.data\s+([0-9]+)', size.stdout).group(1)
+    # size_bss_sec = re.search('\.bss\s+([0-9]+)', size.stdout).group(1)
+    # result_file.write(test_name + ', .text, ' + size_text_sec + ', bytes\n')
+    # result_file.write(test_name + ', .rodata, ' + size_rodata_sec + ', bytes\n')
+    # result_file.write(test_name + ', .data, ' + size_data_sec + ', bytes\n')
+    # result_file.write(test_name + ', .bss, ' + size_bss_sec + ', bytes\n')
+    
+    
+    
+    size = subprocess.run(['objdump', '-h', exec_path], cwd='./', capture_output=True, text=True)
+    sections = size.stdout.split('\n')
+
+    size_text_sec = 0
+    size_rodata_sec = 0
+    size_data_sec = 0
+    size_bss_sec = 0
+
+    for section in sections:
+        match = re.search('\.text\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)', section)
+        if match:
+            if match.group(2) == 'AX':
+                size_text_sec = int(match.group(3), 16)
+        match = re.search('\.rodata\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)', section)
+        if match:
+            if match.group(2) == 'AR':
+                size_rodata_sec = int(match.group(3), 16)
+        match = re.search('\.data\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)', section)
+        if match:
+            if match.group(2) == 'WA':
+                size_data_sec = int(match.group(3), 16)
+        match = re.search('\.bss\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)', section)
+        if match:
+            if match.group(2) == 'WA':
+                size_bss_sec = int(match.group(3), 16)
+
+    result_file.write(test_name + ',.text,' + str(size_text_sec) + ', bytes\n')
+    result_file.write(test_name + ',.rodata,' + str(size_rodata_sec) + ', bytes\n')
+    result_file.write(test_name + ',.data,' + str(size_data_sec) + ', bytes\n')
+    result_file.write(test_name + ',.bss,' + str(size_bss_sec) + ', bytes\n')
 
 # Get global heap maximum
 def get_global_heap_max(exec_path, result_file):
@@ -187,10 +224,10 @@ def get_execution_time(exec_path, result_file):
 # List of tests
 list_of_tests = [
     test_openssl_compatibility,
-    get_file_size,
-    get_section_sizes,
-    get_global_heap_max,
-    get_execution_time,
+    # get_file_size,
+    # get_section_sizes,
+    # get_global_heap_max,
+    # get_execution_time,
     ]
 
 # Main function

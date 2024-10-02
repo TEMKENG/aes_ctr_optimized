@@ -37,23 +37,6 @@ const SBOX: [u8; 256] = [
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
 
-// Constants for block and chunk sizes
-const BLOCK_SIZE: usize = 16; // AES block size
-const CHUNK_SIZE: usize = 1_048_576; // 1 MB chunks
-
-// Encrypt a chunk in CTR mode (mock implementation)
-fn process_chunk(chunk: &mut [u8], keys: &[u8], mut counter: [u8; 16], nr: usize) {
-    for block in chunk.chunks_mut(BLOCK_SIZE) {
-
-        aes_v2( &mut counter, keys, nr); // Encrypt the counter
-        for i in 0..block.len() {
-            block[i] ^= counter[i]; // XOR block with encrypted counter
-        }
-        ctr128_inc(&mut counter, 1); // Increment counter for next block
-    }
-
-}
-
 /// Die Funktion führt die XOR Operation zwischen 'stage' und 'key' durch
 fn add_round_keys_v2(stage: &mut [u8], expanded_key: &[u8], round: usize) {
     let offset = round * 16;
@@ -147,34 +130,12 @@ fn xor_for_vec(v1: &Vec<u8>, v2: &Vec<u8>) -> Vec<u8> {
     v3
 }
 
-
 fn rotate(input: &mut [u8]) {
-    input.swap(1, 4);
-    input.swap(2, 8);
-    input.swap(3, 12);
-    input.swap(6, 9);
-    input.swap(7, 13);
-    input.swap(11, 14);
-
-}
-
-fn rotate_and_result(results: &mut [u8], cipher: & [u8], input_data: &[u8], offset: usize) {
-    results[offset + 0] = cipher[0] ^ input_data[offset + 0];
-    results[offset + 1] = cipher[4] ^ input_data[offset + 1];
-    results[offset + 2] = cipher[8] ^ input_data[offset + 2];
-    results[offset + 3] = cipher[12] ^ input_data[offset + 3];
-    results[offset + 4] = cipher[1] ^ input_data[offset + 4];
-    results[offset + 5] = cipher[5] ^ input_data[offset + 5];
-    results[offset + 6] = cipher[9] ^ input_data[offset + 6];
-    results[offset + 7] = cipher[13] ^ input_data[offset + 7];
-    results[offset + 8] = cipher[2] ^ input_data[offset + 8];
-    results[offset + 9] = cipher[6] ^ input_data[offset + 9];
-    results[offset + 10] = cipher[10] ^ input_data[offset + 10];
-    results[offset + 11] = cipher[14] ^ input_data[offset + 11];
-    results[offset + 12] = cipher[3] ^ input_data[offset + 12];
-    results[offset + 13] = cipher[7] ^ input_data[offset + 13];
-    results[offset + 14] = cipher[11] ^ input_data[offset + 14];
-    results[offset + 15] = cipher[15] ^ input_data[offset + 15];
+    for i in 0..4 {
+        for j in i + 1..4 {
+            input.swap(i * 4 + j, j * 4 + i);
+        }
+    }
 }
 
 fn paround(input: &[u8]) {
@@ -190,11 +151,10 @@ fn paround(input: &[u8]) {
     println!();
 }
 
-fn aes_v2(mut stage: &mut [u8], keys: &[u8], nr: usize) {
-    rotate(stage);
+fn aes_v2(mut stage: &mut Vec<u8>, keys: &Vec<u8>, nr: usize) {
     add_round_keys_v2(&mut stage, &keys, 0);
 
-    for i in 1..nr + 1 {
+    for i in 1..nr+1 {
         sub_bytes_v2(&mut stage);
         shift_rows_v2(&mut stage);
         if i < nr {
@@ -202,7 +162,6 @@ fn aes_v2(mut stage: &mut [u8], keys: &[u8], nr: usize) {
         }
         add_round_keys_v2(&mut stage, &keys, i);
     }
-    rotate(stage);
 }
 
 fn sub_bytes_v2(stage: &mut [u8]) {
@@ -219,7 +178,7 @@ fn shift_rows_v2(stage: &mut [u8]) {
 }
 
 /// Funktion zur Mischung einer Spalte
-fn mix_columns_v2(mut stage: &mut [u8]) {
+fn mix_columns_v2(mut stage: &mut Vec<u8>) {
     for column in 0..4 {
         let t0: u8 = stage[column];
         let t1: u8 = stage[column + 4];
@@ -255,18 +214,20 @@ fn gmul(p: u8, q: u8) -> u8 {
 }
 
 /// Inkrementierung der Zaeler um c
-fn ctr128_inc(counter: &[u8], mut c: u64) -> Vec<u8> {
-    let mut count = vec![0u8; counter.len()];
+fn ctr128_inc(counter: &Vec<u8>, mut c: u64) -> Vec<u8> {
+    let mut n: usize = 16;
+    let mut count: Vec<u8> = counter.clone();
 
-    for n in (0..16).rev() {
+    loop {
+        n -= 1;
         c += count[n] as u64;
         count[n] = c as u8;
         c >>= 8;
+        if n == 0 {
+            break count;
+        }
     }
-
-    count
 }
-
 
 /// Die Funktion liest 'OFFSET' Bytes im Datei von OFFSET*index bis OFFSET*(index + 1)
 fn reader(file: &PathBuf, sequence_nr: u64, offset: usize, size: usize) -> Vec<u8> {
@@ -360,14 +321,17 @@ pub fn handle_aes_ctr_command(
             thread::spawn(move || {
                 let block_nr = sequence * NR_T + j;
                 let mut input = ctr128_inc(&iv_bytes, block_nr);
+                println!("Input: {} Block: {block_nr:02x}", hex::encode(&input));
+                rotate(&mut input);
                 aes_v2(&mut input, &keys, nr);
+                rotate(&mut input);
                 thread_tx.send((j as usize * 16, input));
             });
         }
         let mut counter = 0;
-        for (offset, cipher) in &rx {
+        for (offset, result) in &rx {
             for j in 0..16 {
-                results[offset + j] = cipher[j] ^ t_data[offset + j];
+                results[offset + j] = result[j] ^ t_data[offset + j];
             }
             counter += 1;
             if (counter == NR_T) {
@@ -379,6 +343,8 @@ pub fn handle_aes_ctr_command(
             .seek(SeekFrom::Start(sequence * 16 * NR_T))
             .expect("Problem by shifting the cursor");
         output_file.write(&results);
+        println!("Results: {}", hex::encode(&results));
+        println!("ungladsdfsdf: {}", results.len());
     }
     drop(tx);
 
@@ -391,12 +357,14 @@ pub fn handle_aes_ctr_command(
         .seek(SeekFrom::Start(cursor_position * 16))
         .expect("Problem by shifting the cursor");
     if rest != 0 && rest >= 16 {
-        println!("La vie est belle!!!");
         nbs = (rest / 16) as u64;
         cursor_position += nbs;
         for i in (0..nbs).map(|x| x as usize * 16) {
             let mut input = iv_in.clone();
+            rotate(&mut input);
             aes_v2(&mut input, &keys, nr);
+            rotate(&mut input);
+
             for j in 0..16 {
                 results[i + j] = input[j] ^ blocks_bytes[i + j];
             }
@@ -404,13 +372,16 @@ pub fn handle_aes_ctr_command(
         }
 
         rest = rest % 16;
+
     }
     if rest != 0 {
         let mut input = match nbs {
             0 => (*iv_bytes).clone(),
             _ => iv_in,
         };
+        rotate(&mut input);
         aes_v2(&mut input, &keys, nr);
+        rotate(&mut input);
         let pos = cursor_position as usize * 16;
         for i in 0..rest {
             results[pos + i] = blocks_bytes[pos + i] ^ input[i];
