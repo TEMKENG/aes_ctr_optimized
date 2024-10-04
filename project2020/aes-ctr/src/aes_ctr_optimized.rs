@@ -1,15 +1,16 @@
 #![allow(unused)]
 use hex;
-use std::any::type_name;
 use std::cmp::min;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::io::{BufReader, BufWriter};
+use std::iter::zip;
 use std::mem;
 use std::path::PathBuf;
 use std::str;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,21 +38,21 @@ const SBOX: [u8; 256] = [
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
 
-// Constants for block and chunk sizes
 const BLOCK_SIZE: usize = 16; // AES block size
-const CHUNK_SIZE: usize = 1_048_576; // 1 MB chunks
+const CHUNK_SIZE: usize = 1_048_576; //  < 1 MB pro thread
 
-// Encrypt a chunk in CTR mode (mock implementation)
-fn process_chunk(chunk: &mut [u8], keys: &[u8], mut counter: [u8; 16], nr: usize) {
-    for block in chunk.chunks_mut(BLOCK_SIZE) {
-
-        aes_v2( &mut counter, keys, nr); // Encrypt the counter
-        for i in 0..block.len() {
-            block[i] ^= counter[i]; // XOR block with encrypted counter
+/// Encrypt a chunk in CTR mode (mock implementation)
+fn process_chunk(chunks: &mut [u8], keys: &[u8], counter: &[u8], nr: usize, starting_block: u64) {
+    let mut cipher_block = ctr128_inc(&counter, starting_block);
+    let blocks = (starting_block + 1..).zip(chunks.chunks_mut(BLOCK_SIZE));
+    for (block_br, chunk) in blocks {
+        aes_v2(&mut cipher_block, keys, nr); // Encrypt the counter
+                                             // XOR block with encrypted counter
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte ^= cipher_block[i];
         }
-        ctr128_inc(&mut counter, 1); // Increment counter for next block
+        cipher_block = ctr128_inc(&counter, block_br); // Increment counter for next block
     }
-
 }
 
 /// Die Funktion führt die XOR Operation zwischen 'stage' und 'key' durch
@@ -60,32 +61,6 @@ fn add_round_keys_v2(stage: &mut [u8], expanded_key: &[u8], round: usize) {
     for i in 0..stage.len() {
         stage[i] ^= expanded_key[offset + i];
     }
-}
-
-fn type_of<T>(_: T) -> &'static str {
-    type_name::<T>()
-}
-
-/// Funktion fuer die Initialisierung von sbox und Ibox
-fn initialize_aes_sbox(sbox: &mut Vec<u8>, boxe: &mut Vec<u8>) {
-    let mut p: u8 = 1;
-    let mut q: u8 = 1;
-    let rotl8 = |x: u8, shift: i32| -> u8 { (x << shift) | (x >> (8 - shift)) };
-    loop {
-        p = p ^ (p << 1) ^ if p & 0x80 != 0 { 0x1B } else { 0 };
-        q ^= q << 1;
-        q ^= q << 2;
-        q ^= q << 4;
-        q ^= if q & 128 != 0 { 0x9 } else { 0 };
-        let xformed: u8 = q ^ rotl8(q, 1) ^ rotl8(q, 2) ^ rotl8(q, 3) ^ rotl8(q, 4);
-        sbox[p as usize] = xformed ^ 0x63;
-        boxe[sbox[p as usize] as usize] = p;
-        if p == 1 {
-            break;
-        }
-    }
-
-    sbox[0] = 0x63;
 }
 
 /// Funktion fuer die Schlüsselerweiterung
@@ -147,7 +122,6 @@ fn xor_for_vec(v1: &Vec<u8>, v2: &Vec<u8>) -> Vec<u8> {
     v3
 }
 
-
 fn rotate(input: &mut [u8]) {
     input.swap(1, 4);
     input.swap(2, 8);
@@ -155,39 +129,6 @@ fn rotate(input: &mut [u8]) {
     input.swap(6, 9);
     input.swap(7, 13);
     input.swap(11, 14);
-
-}
-
-fn rotate_and_result(results: &mut [u8], cipher: & [u8], input_data: &[u8], offset: usize) {
-    results[offset + 0] = cipher[0] ^ input_data[offset + 0];
-    results[offset + 1] = cipher[4] ^ input_data[offset + 1];
-    results[offset + 2] = cipher[8] ^ input_data[offset + 2];
-    results[offset + 3] = cipher[12] ^ input_data[offset + 3];
-    results[offset + 4] = cipher[1] ^ input_data[offset + 4];
-    results[offset + 5] = cipher[5] ^ input_data[offset + 5];
-    results[offset + 6] = cipher[9] ^ input_data[offset + 6];
-    results[offset + 7] = cipher[13] ^ input_data[offset + 7];
-    results[offset + 8] = cipher[2] ^ input_data[offset + 8];
-    results[offset + 9] = cipher[6] ^ input_data[offset + 9];
-    results[offset + 10] = cipher[10] ^ input_data[offset + 10];
-    results[offset + 11] = cipher[14] ^ input_data[offset + 11];
-    results[offset + 12] = cipher[3] ^ input_data[offset + 12];
-    results[offset + 13] = cipher[7] ^ input_data[offset + 13];
-    results[offset + 14] = cipher[11] ^ input_data[offset + 14];
-    results[offset + 15] = cipher[15] ^ input_data[offset + 15];
-}
-
-fn paround(input: &[u8]) {
-    for i in 0..input.len() / 4 {
-        println!(
-            "{:02x} {:02x} {:02x} {:02x}",
-            input[i * 4],
-            input[i * 4 + 1],
-            input[i * 4 + 2],
-            input[i * 4 + 3]
-        );
-    }
-    println!();
 }
 
 fn aes_v2(mut stage: &mut [u8], keys: &[u8], nr: usize) {
@@ -259,7 +200,7 @@ fn ctr128_inc(counter: &[u8], mut c: u64) -> Vec<u8> {
     let mut count = vec![0u8; counter.len()];
 
     for n in (0..16).rev() {
-        c += count[n] as u64;
+        c += counter[n] as u64;
         count[n] = c as u8;
         c >>= 8;
     }
@@ -267,18 +208,50 @@ fn ctr128_inc(counter: &[u8], mut c: u64) -> Vec<u8> {
     count
 }
 
-
 /// Die Funktion liest 'OFFSET' Bytes im Datei von OFFSET*index bis OFFSET*(index + 1)
-fn reader(file: &PathBuf, sequence_nr: u64, offset: usize, size: usize) -> Vec<u8> {
-    let file_str = file.to_str().unwrap_or_default();
-    let start: u64 = (offset as u64) * sequence_nr;
-    let mut f = File::open(file).expect(format!("Can't open the file `{file_str}").as_str());
-    let mut buffer: Vec<u8> = vec![0u8; size];
-    f.seek(SeekFrom::Start(start))
-        .expect("Problem by moving the cursor"); //bewegen Sie den Cursor
-    f.read(&mut buffer)
-        .expect(format!("Problem by reading the file `{file_str}`").as_str());
+fn read_file(file: &PathBuf, cursor_position: u64, buffer_size: usize) -> Vec<u8> {
+    let filename = file.display();
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(file)
+        .expect(format!("Can't open the file `{filename}").as_str());
+
+    let mut buffer: Vec<u8> = vec![0u8; buffer_size];
+    file.seek(SeekFrom::Start(cursor_position))
+        .expect("Failed to seek");
+    let bytes_read = file
+        .read(&mut buffer)
+        .expect(format!("Problem by reading the file `{filename}`").as_str());
+
+    buffer.truncate(bytes_read); // Adjust buffer size to bytes read
     buffer
+}
+
+fn write_to_file(file_path: &PathBuf, cursor_position: u64, buf: &[u8]) {
+    let file_str = file_path.display();
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true) // Create the file if it doesn't exist
+        // .append(true) // Append instead of overwriting
+        .open(file_path)
+        .expect(format!("Can't open the file `{file_str}").as_str());
+
+    let mut writer = BufWriter::new(file);
+    writer
+        .seek(SeekFrom::Start(cursor_position))
+        .expect("Failed to seek");
+    // Mutex logic
+    loop {
+        match writer.write_all(buf) {
+            Ok(_) => break,
+            Err(_) => thread::sleep(Duration::from_millis(1)),
+        }
+    }
+    writer
+        .flush()
+        .expect("Problem by flushing this output stream"); // Ensure the data is written to the file
 }
 
 /// Function to print bytes
@@ -307,115 +280,96 @@ pub fn handle_aes_ctr_command(
     println!(" - input_file_path   = {}", input_file_path.display());
     println!(" - output_file_path  = {}", output_file_path.display());
 
-    let mut sbox: Vec<u8> = vec![0; 256];
-    let mut ibox: Vec<u8> = vec![0; 256];
     let (nk, nr) = match key_size {
         128 => (4 as usize, 10 as usize),
         _ => (8 as usize, 14 as usize),
     };
 
-    initialize_aes_sbox(&mut sbox, &mut ibox); //Initialisierung von sbox und Ibox
     let keys: Vec<u8> = key_expansion_v2(&key_bytes, nk, nr); // Schluessel erweitern.
-    println!("nk: {nk} nr: {nr} keys: {} x 4 x 4)", keys.len() / 16,);
+    println!("nk: {nk} nr: {nr} keys: {} x 4 x 4", keys.len() / 16,);
 
     /// Globale Informationen
-    const NR_T: u64 = 64; //Anzahl von Thread.
-    const OFFSET: u64 = 16 * NR_T;
-    let mut f = BufReader::new(File::open(&input_file_path).unwrap());
-    let len = f.seek(SeekFrom::End(0)).ok().unwrap(); //Datei Laenge
-    let mut nbs: u64 = len / OFFSET; //Anzahl der sequentielle Ausführung
-    let mut rest: usize = (len % OFFSET) as usize;
-
-    let mut output_file = BufWriter::new(
-        OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true) // This will create the file if it doesn't exist
-            .open(&output_file_path)
-            .expect("Problem by creating output file"),
-    );
+    let mut nr_t: u64 = 8; //Anzahl von Thread.
+    let reader = File::open(&input_file_path).expect("Problem by opening file");
+    let len = reader.metadata().unwrap().len(); //Datei Laenge
+    let mut reader = BufReader::new(reader);
+    if len == 0 {
+        eprintln!("The file is empty.");
+        return;
+    }
+    let mut nbs: u64 = std::cmp::max(len / CHUNK_SIZE as u64, 1); //Anzahl der sequentielle Ausführung
+    let mut rest: usize = (len as usize % CHUNK_SIZE);
+    nr_t = std::cmp::min(nr_t, nbs);
 
     println!("Rest: {rest}");
     println!("Laenge der Datei: {len}");
+    println!("Anzal von Threads: {nr_t}");
     println!("Anzahl der sequentielle Ausführung: {nbs}");
 
     /// create atomic reference
     /// // Channel to collect results
-    let sbox = Arc::new(sbox);
-    let ibox = Arc::new(ibox);
     let keys = Arc::new(keys);
     let iv_bytes = Arc::new(iv_bytes);
-    let (tx, rx) = mpsc::channel();
-    // let mut results = Arc::new(Mutex::new(results));
+    // let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel();
+    let rx = Arc::new(Mutex::new(rx));
+    let number_thread = Arc::new(Mutex::new(0));
+    for _ in 0..nr_t {
+        let tx = tx.clone();
+        let rx = rx.clone();
+        let mut thread_input_file_path = input_file_path.clone();
+        let output = output_file_path.clone();
+        let local_counter = iv_bytes.clone();
+        let thread_keys = keys.clone();
+        let number_thread = number_thread.clone();
+        thread::spawn(move || {
+            loop {
+                let message = {
+                    let rx = rx.lock().unwrap();
+                    rx.recv()
+                };
 
-    for sequence in 0..nbs {
-        let mut results = vec![0; 16 * NR_T as usize];
-        let t_data: Vec<u8> = reader(&input_file_path, sequence, OFFSET as usize, OFFSET as usize);
-        for j in (0..NR_T) {
-            /// Klone Daten
-            let keys = keys.clone();
-            let iv_bytes = iv_bytes.clone();
-            let thread_tx = tx.clone();
-            /// aes parallele ausführen
-            thread::spawn(move || {
-                let block_nr = sequence * NR_T + j;
-                let mut input = ctr128_inc(&iv_bytes, block_nr);
-                aes_v2(&mut input, &keys, nr);
-                thread_tx.send((j as usize * 16, input));
-            });
-        }
-        let mut counter = 0;
-        for (offset, cipher) in &rx {
-            for j in 0..16 {
-                results[offset + j] = cipher[j] ^ t_data[offset + j];
+                if let Ok((chunk_id)) = message {
+                    let now = Instant::now();
+                    
+                    let cursor_position = chunk_id * CHUNK_SIZE as u64;
+                    let starting_block = cursor_position / 16;
+                    let mut chunks =
+                        read_file(&thread_input_file_path, cursor_position, CHUNK_SIZE);
+
+                    process_chunk(
+                        &mut chunks,
+                        &thread_keys,
+                        &local_counter,
+                        nr,
+                        starting_block,
+                    ); // Encrypt the chunk
+
+                    write_to_file(&output, cursor_position, &chunks);
+                    let mut number_thread = number_thread.lock().unwrap();
+                    *number_thread -=1;
+                    println!("Finish chunk: {chunk_id} started cursor_position: {cursor_position} starting_block: {starting_block} Length: {} Time: {:0.5} Number of Worker: {number_thread}", chunks.len(), now.elapsed().as_secs_f32());
+                } else {
+                    println!("Thread terminate");
+                    break; // No more chunks to receive, exit the loop
+                }
             }
-            counter += 1;
-            if (counter == NR_T) {
+        });
+    }
+    // Feed the threads with chunks of data
+    for chunk_id in 0..nbs {
+        loop {
+            let mut number_thread = number_thread.lock().unwrap();
+            if *number_thread < nr_t + 2 {
+                *number_thread += 1;
                 break;
             }
         }
-        // Teilergernisse hinzufügen
-        output_file
-            .seek(SeekFrom::Start(sequence * 16 * NR_T))
-            .expect("Problem by shifting the cursor");
-        output_file.write(&results);
+        tx.send(chunk_id).unwrap();
+        println!("Send chunk: {chunk_id}");
     }
-    drop(tx);
-
-    let mut cursor_position = nbs * NR_T;
-    let mut iv_in: Vec<u8> = ctr128_inc(&iv_bytes, cursor_position);
-    let blocks_bytes: Vec<u8> = reader(&input_file_path, cursor_position, OFFSET as usize, rest);
-    println!("Laenge index {:?}", blocks_bytes.len());
-    let mut results = vec![0; blocks_bytes.len()];
-    output_file
-        .seek(SeekFrom::Start(cursor_position * 16))
-        .expect("Problem by shifting the cursor");
-    if rest != 0 && rest >= 16 {
-        println!("La vie est belle!!!");
-        nbs = (rest / 16) as u64;
-        cursor_position += nbs;
-        for i in (0..nbs).map(|x| x as usize * 16) {
-            let mut input = iv_in.clone();
-            aes_v2(&mut input, &keys, nr);
-            for j in 0..16 {
-                results[i + j] = input[j] ^ blocks_bytes[i + j];
-            }
-            iv_in = ctr128_inc(&iv_in, 1);
-        }
-
-        rest = rest % 16;
+    println!("Number of active worker: {}", number_thread.lock().unwrap());
+    while *number_thread.lock().unwrap() != 0 {
     }
-    if rest != 0 {
-        let mut input = match nbs {
-            0 => (*iv_bytes).clone(),
-            _ => iv_in,
-        };
-        aes_v2(&mut input, &keys, nr);
-        let pos = cursor_position as usize * 16;
-        for i in 0..rest {
-            results[pos + i] = blocks_bytes[pos + i] ^ input[i];
-        }
-    }
-
-    output_file.write(&results);
+    
 }

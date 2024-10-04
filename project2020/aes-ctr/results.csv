@@ -1,0 +1,8 @@
+File, Time
+Release, Mutex to stop
+test_1mb, 0.32755139999999994
+test_100mb, 2.4426417000000002
+test_1kb, 1.1327075
+test_500mb, 23.926414900000005
+test_1gb, 47.6010446
+test_2gb, 99.5136204
