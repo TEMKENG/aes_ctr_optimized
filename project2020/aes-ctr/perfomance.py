@@ -14,9 +14,12 @@ if __name__ == '__main__':
     file = open("data/output.log", "w")
     for filename in os.listdir(dirname):
         filename = os.path.join(dirname, filename)
+        if os.path.isdir(filename):
+            continue
         if os.path.exists(output_file):
             os.remove(output_file)
         command = 'cargo run --release -- -c encrypt -i %s -v 00112233445566778899aabbccddeeff -k 000102030405060708090a0b0c0d0e0f -o data/test_coded.hex'
+        command = './target/release/aes-ctr.exe -c encrypt -i %s -v 00112233445566778899aabbccddeeff -k 000102030405060708090a0b0c0d0e0f -o data/test_coded.hex'
         command = command % filename
         print(command)
         # Run the command and redirect the output to the file
@@ -25,6 +28,7 @@ if __name__ == '__main__':
             subprocess.run(command.split(' '), stdout=file,
                            text=True, stderr=subprocess.STDOUT)
             results[filename].append((datetime.now() - now).total_seconds())
+            ic(results[filename][-1])
         results[filename] = sum(results[filename]) / len(results[filename])
         ic(filename, results[filename])
     file.close()

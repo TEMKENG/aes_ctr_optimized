@@ -1,19 +1,9 @@
-#![allow(unused)]
-use hex;
-use std::cmp::min;
+use crate::thread_pool::*;
 use std::fs::{File, OpenOptions};
-use std::io;
-use std::io::prelude::*;
-use std::io::SeekFrom;
-use std::io::{BufReader, BufWriter};
-use std::iter::zip;
-use std::mem;
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::str;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
 const RCON: [u8; 15] = [
     1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d, 0x9a,
@@ -39,27 +29,31 @@ const SBOX: [u8; 256] = [
 ];
 
 const BLOCK_SIZE: usize = 16; // AES block size
-const CHUNK_SIZE: usize = 1_048_576; //  < 1 MB pro thread
+const CHUNK_SIZE: usize = 1_048_576 * 4; //  < 1 MB pro thread
 
 /// Encrypt a chunk in CTR mode (mock implementation)
 fn process_chunk(chunks: &mut [u8], keys: &[u8], counter: &[u8], nr: usize, starting_block: u64) {
-    let mut cipher_block = ctr128_inc(&counter, starting_block);
-    let blocks = (starting_block + 1..).zip(chunks.chunks_mut(BLOCK_SIZE));
-    for (block_br, chunk) in blocks {
-        aes_v2(&mut cipher_block, keys, nr); // Encrypt the counter
-                                             // XOR block with encrypted counter
-        for (i, byte) in chunk.iter_mut().enumerate() {
-            *byte ^= cipher_block[i];
+    // Create a mutable buffer to store the incremented counter
+    let mut cipher_block = [0u8; BLOCK_SIZE];
+    let mut c: u64;
+    // Iterate over each chunk of data
+    for (i, chunk) in chunks.chunks_mut(BLOCK_SIZE).enumerate() {
+        c = starting_block + i as u64;
+        // Increment the counter using the provided ctr128_inc logic
+        for i in (0..BLOCK_SIZE).rev() {
+            c += counter[i] as u64;
+            cipher_block[i] = c as u8;
+            c >>= 8;
+            if c == 0 {
+                break;
+            }
         }
-        cipher_block = ctr128_inc(&counter, block_br); // Increment counter for next block
-    }
-}
-
-/// Die Funktion führt die XOR Operation zwischen 'stage' und 'key' durch
-fn add_round_keys_v2(stage: &mut [u8], expanded_key: &[u8], round: usize) {
-    let offset = round * 16;
-    for i in 0..stage.len() {
-        stage[i] ^= expanded_key[offset + i];
+        // Encrypt the counter block
+        aes_v2(&mut cipher_block, keys, nr);
+        // XOR the encrypted counter block with the current chunk
+        for (j, byte) in chunk.iter_mut().enumerate() {
+            *byte ^= cipher_block[j];
+        }
     }
 }
 
@@ -69,14 +63,13 @@ fn add_round_keys_v2(stage: &mut [u8], expanded_key: &[u8], round: usize) {
 /// * `nr` - Number of rounds, which is  a  function  of  Nk  and  Nb  (which  is fixed). For this standard, Nr = 10, 12, or 14.
 fn key_expansion_v2(key: &[u8], nk: usize, nr: usize) -> Vec<u8> {
     let mut words: Vec<u8> = vec![0; (nr + 1) * 4 * 4];
-
     // Copy the original key into the first part of the words vector
     words[..key.len()].copy_from_slice(key);
 
     for i in nk..(nr + 1) * 4 {
         let previous_index = (i - nk) * 4;
         let index = (i - 1) * 4;
-        let mut tmp_key = [0u8; 4];
+        let tmp_key: [u8; 4];
 
         if i % nk == 0 {
             tmp_key = [
@@ -100,10 +93,10 @@ fn key_expansion_v2(key: &[u8], nk: usize, nr: usize) -> Vec<u8> {
                 words[index + 3] ^ words[previous_index + 3],
             ];
         }
-
-        words[(i * 4)..(i * 4 + 4)].copy_from_slice(&tmp_key);
+        for (j, v) in tmp_key.iter().enumerate() {
+            words[i * 4 + j] = *v;
+        }
     }
-
     // Transpose the words matrix
     for offset in (0..nr + 1).map(|x| x * 16) {
         for i in 0..4 {
@@ -112,16 +105,19 @@ fn key_expansion_v2(key: &[u8], nk: usize, nr: usize) -> Vec<u8> {
             }
         }
     }
-
     words
 }
 
-/// Funktion zur XOR Addition von zwei Vektoren.
-fn xor_for_vec(v1: &Vec<u8>, v2: &Vec<u8>) -> Vec<u8> {
-    let v3: Vec<u8> = v1.iter().zip(v2.iter()).map(|(&x1, &x2)| x1 ^ x2).collect();
-    v3
+/// Die Funktion führt die XOR Operation zwischen 'stage' und 'key' durch
+#[inline]
+fn add_round_keys_v2(stage: &mut [u8], expanded_key: &[u8], round: usize) {
+    let offset = round * 16;
+    for i in 0..stage.len() {
+        stage[i] ^= expanded_key[offset + i];
+    }
 }
 
+#[inline]
 fn rotate(input: &mut [u8]) {
     input.swap(1, 4);
     input.swap(2, 8);
@@ -131,13 +127,13 @@ fn rotate(input: &mut [u8]) {
     input.swap(11, 14);
 }
 
+#[inline]
 fn aes_v2(mut stage: &mut [u8], keys: &[u8], nr: usize) {
     rotate(stage);
     add_round_keys_v2(&mut stage, &keys, 0);
 
     for i in 1..nr + 1 {
-        sub_bytes_v2(&mut stage);
-        shift_rows_v2(&mut stage);
+        shift_rows_v3(&mut stage);
         if i < nr {
             mix_columns_v2(&mut stage);
         }
@@ -146,27 +142,24 @@ fn aes_v2(mut stage: &mut [u8], keys: &[u8], nr: usize) {
     rotate(stage);
 }
 
-fn sub_bytes_v2(stage: &mut [u8]) {
-    stage.iter_mut().for_each(|x| *x = SBOX[*x as usize]);
-}
-
-fn shift_rows_v2(stage: &mut [u8]) {
+#[inline]
+fn shift_rows_v3(stage: &mut [u8]) {
     stage.copy_from_slice(&mut [
-        stage[0], stage[1], stage[2], stage[3], // 1. row
-        stage[5], stage[6], stage[7], stage[4], // 2. row
-        stage[10], stage[11], stage[8], stage[9], // 3. row
-        stage[15], stage[12], stage[13], stage[14], // 4. row
+        SBOX[stage[0] as usize] , SBOX[stage[1] as usize] , SBOX[stage[2] as usize] , SBOX[stage[3] as usize] , // 1. row
+        SBOX[stage[5] as usize] , SBOX[stage[6] as usize] , SBOX[stage[7] as usize] , SBOX[stage[4] as usize] , // 2. row
+        SBOX[stage[10]as usize] , SBOX[stage[11]as usize] , SBOX[stage[8] as usize] , SBOX[stage[9] as usize] , // 3. row
+        SBOX[stage[15]as usize] , SBOX[stage[12]as usize] , SBOX[stage[13]as usize] , SBOX[stage[14]as usize] , // 4. row
     ]);
 }
 
 /// Funktion zur Mischung einer Spalte
-fn mix_columns_v2(mut stage: &mut [u8]) {
+#[inline]
+fn mix_columns_v2(stage: &mut [u8]) {
     for column in 0..4 {
         let t0: u8 = stage[column];
         let t1: u8 = stage[column + 4];
         let t2: u8 = stage[column + 8];
         let t3: u8 = stage[column + 12];
-
         // Matrixmultiplkation wie in die originale Artikel
         stage[column] = gmul(t0, 0x2) ^ gmul(t1, 0x3) ^ t2 ^ t3;
         stage[column + 4] = t0 ^ gmul(t1, 0x2) ^ gmul(t2, 0x3) ^ t3;
@@ -176,6 +169,7 @@ fn mix_columns_v2(mut stage: &mut [u8]) {
 }
 
 /// Funktion zur Multiplikation von zwei Zahlen in GF(2^8)
+#[inline]
 fn gmul(p: u8, q: u8) -> u8 {
     let mut a = p;
     let mut b = q;
@@ -195,72 +189,9 @@ fn gmul(p: u8, q: u8) -> u8 {
     r
 }
 
-/// Inkrementierung der Zaeler um c
-fn ctr128_inc(counter: &[u8], mut c: u64) -> Vec<u8> {
-    let mut count = vec![0u8; counter.len()];
-
-    for n in (0..16).rev() {
-        c += counter[n] as u64;
-        count[n] = c as u8;
-        c >>= 8;
-    }
-
-    count
-}
-
-/// Die Funktion liest 'OFFSET' Bytes im Datei von OFFSET*index bis OFFSET*(index + 1)
-fn read_file(file: &PathBuf, cursor_position: u64, buffer_size: usize) -> Vec<u8> {
-    let filename = file.display();
-    let mut file = OpenOptions::new()
-        .read(true)
-        .open(file)
-        .expect(format!("Can't open the file `{filename}").as_str());
-
-    let mut buffer: Vec<u8> = vec![0u8; buffer_size];
-    file.seek(SeekFrom::Start(cursor_position))
-        .expect("Failed to seek");
-    let bytes_read = file
-        .read(&mut buffer)
-        .expect(format!("Problem by reading the file `{filename}`").as_str());
-
-    buffer.truncate(bytes_read); // Adjust buffer size to bytes read
-    buffer
-}
-
-fn write_to_file(file_path: &PathBuf, cursor_position: u64, buf: &[u8]) {
-    let file_str = file_path.display();
-
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true) // Create the file if it doesn't exist
-        // .append(true) // Append instead of overwriting
-        .open(file_path)
-        .expect(format!("Can't open the file `{file_str}").as_str());
-
-    let mut writer = BufWriter::new(file);
-    writer
-        .seek(SeekFrom::Start(cursor_position))
-        .expect("Failed to seek");
-    // Mutex logic
-    loop {
-        match writer.write_all(buf) {
-            Ok(_) => break,
-            Err(_) => thread::sleep(Duration::from_millis(1)),
-        }
-    }
-    writer
-        .flush()
-        .expect("Problem by flushing this output stream"); // Ensure the data is written to the file
-}
-
 /// Function to print bytes
 fn println_bytes(name_str: &str, bytes: &Vec<u8>) {
-    print!("{}", name_str);
-    for b in bytes {
-        print!("{:02x}", b);
-    }
-    print!("\n");
+    println!("{name_str} {:02x?}", bytes);
 }
 
 /// Function to handle encryption/decryption command with given parameters
@@ -280,96 +211,60 @@ pub fn handle_aes_ctr_command(
     println!(" - input_file_path   = {}", input_file_path.display());
     println!(" - output_file_path  = {}", output_file_path.display());
 
+    // Determine key and round count based on key size
     let (nk, nr) = match key_size {
-        128 => (4 as usize, 10 as usize),
-        _ => (8 as usize, 14 as usize),
+        128 => (4, 10),
+        192 => (6, 12),
+        256 => (8, 14),
+        _ => panic!("Unsupported key size"),
     };
 
-    let keys: Vec<u8> = key_expansion_v2(&key_bytes, nk, nr); // Schluessel erweitern.
-    println!("nk: {nk} nr: {nr} keys: {} x 4 x 4", keys.len() / 16,);
-
-    /// Globale Informationen
-    let mut nr_t: u64 = 8; //Anzahl von Thread.
-    let reader = File::open(&input_file_path).expect("Problem by opening file");
-    let len = reader.metadata().unwrap().len(); //Datei Laenge
-    let mut reader = BufReader::new(reader);
-    if len == 0 {
-        eprintln!("The file is empty.");
-        return;
-    }
-    let mut nbs: u64 = std::cmp::max(len / CHUNK_SIZE as u64, 1); //Anzahl der sequentielle Ausführung
-    let mut rest: usize = (len as usize % CHUNK_SIZE);
-    nr_t = std::cmp::min(nr_t, nbs);
-
-    println!("Rest: {rest}");
-    println!("Laenge der Datei: {len}");
-    println!("Anzal von Threads: {nr_t}");
-    println!("Anzahl der sequentielle Ausführung: {nbs}");
-
-    /// create atomic reference
-    /// // Channel to collect results
-    let keys = Arc::new(keys);
     let iv_bytes = Arc::new(iv_bytes);
-    // let (tx, rx) = mpsc::channel();
-    let (tx, rx) = channel();
-    let rx = Arc::new(Mutex::new(rx));
-    let number_thread = Arc::new(Mutex::new(0));
-    for _ in 0..nr_t {
-        let tx = tx.clone();
-        let rx = rx.clone();
-        let mut thread_input_file_path = input_file_path.clone();
-        let output = output_file_path.clone();
-        let local_counter = iv_bytes.clone();
-        let thread_keys = keys.clone();
-        let number_thread = number_thread.clone();
-        thread::spawn(move || {
-            loop {
-                let message = {
-                    let rx = rx.lock().unwrap();
-                    rx.recv()
-                };
+    let keys = Arc::new(key_expansion_v2(&key_bytes, nk, nr));
 
-                if let Ok((chunk_id)) = message {
-                    let now = Instant::now();
-                    
-                    let cursor_position = chunk_id * CHUNK_SIZE as u64;
-                    let starting_block = cursor_position / 16;
-                    let mut chunks =
-                        read_file(&thread_input_file_path, cursor_position, CHUNK_SIZE);
+    let input_file = File::open(&input_file_path).expect("Failed to open input file");
+    let file_size = input_file.metadata().unwrap().len();
 
-                    process_chunk(
-                        &mut chunks,
-                        &thread_keys,
-                        &local_counter,
-                        nr,
-                        starting_block,
-                    ); // Encrypt the chunk
+    let output_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&output_file_path)
+        .expect("Failed to open output file");
+    let writer = Arc::new(Mutex::new(BufWriter::with_capacity(
+        CHUNK_SIZE,
+        output_file,
+    )));
 
-                    write_to_file(&output, cursor_position, &chunks);
-                    let mut number_thread = number_thread.lock().unwrap();
-                    *number_thread -=1;
-                    println!("Finish chunk: {chunk_id} started cursor_position: {cursor_position} starting_block: {starting_block} Length: {} Time: {:0.5} Number of Worker: {number_thread}", chunks.len(), now.elapsed().as_secs_f32());
-                } else {
-                    println!("Thread terminate");
-                    break; // No more chunks to receive, exit the loop
-                }
+    let nr_t: u64 = 4; //Anzahl von Thread.
+    let num_chunks = (file_size as f64 / CHUNK_SIZE as f64).ceil() as usize;
+    let pool = ThreadPool::new(nr_t as usize);
+    let reader = Arc::new(Mutex::new(BufReader::with_capacity(CHUNK_SIZE, input_file)));
+
+    for chunk_id in 0..num_chunks {
+        let keys = Arc::clone(&keys);
+        let iv = Arc::clone(&iv_bytes);
+        let writer = writer.clone();
+        let reader = reader.clone();
+
+        pool.execute(move || {
+            let mut chunk = vec![0; CHUNK_SIZE];
+            let starting_pos = chunk_id * CHUNK_SIZE;
+            let starting_block = (starting_pos / BLOCK_SIZE) as u64;
+
+            {
+                let mut reader = reader.lock().unwrap();
+                reader.seek(SeekFrom::Start(starting_pos as u64)).unwrap();
+                let bytes_read = reader.read(&mut chunk).unwrap_or(0);
+                chunk.truncate(bytes_read);
             }
+
+            process_chunk(&mut chunk, &keys, &iv, nr, starting_block);
+
+            let mut writer = writer.lock().unwrap();
+            writer
+                .seek(SeekFrom::Start((chunk_id * CHUNK_SIZE) as u64))
+                .unwrap();
+            writer.write_all(&chunk).unwrap();
         });
     }
-    // Feed the threads with chunks of data
-    for chunk_id in 0..nbs {
-        loop {
-            let mut number_thread = number_thread.lock().unwrap();
-            if *number_thread < nr_t + 2 {
-                *number_thread += 1;
-                break;
-            }
-        }
-        tx.send(chunk_id).unwrap();
-        println!("Send chunk: {chunk_id}");
-    }
-    println!("Number of active worker: {}", number_thread.lock().unwrap());
-    while *number_thread.lock().unwrap() != 0 {
-    }
-    
 }

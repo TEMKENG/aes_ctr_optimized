@@ -1,5 +1,5 @@
 File, Time
-Release, Mutex to stop
+Commit, "Try to simulate the semaphore behavior"
 test_1mb, 0.32755139999999994
 test_100mb, 2.4426417000000002
 test_1kb, 1.1327075

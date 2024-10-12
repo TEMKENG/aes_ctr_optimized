@@ -1,30 +1,34 @@
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-enum Message {
+pub enum Message {
     NewJob(Job),
     Terminate,
 }
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
+pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
-struct Worker {
+pub struct Worker {
     id: usize,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<Receiver<Message>>>) -> Worker {
+    pub fn new(id: usize, receiver: Arc<Mutex<Receiver<Message>>>) -> Worker {
         let thread = thread::spawn(move || loop {
-            let message = receiver.lock().unwrap().recv().unwrap();
+            let message: Message;
+            {
+                let receiver = receiver.lock().unwrap();
+                message = receiver.recv().unwrap();
+            }
+
             match message {
                 Message::NewJob(job) => {
-                    println!("Worker {} got a job; executing.", id);
                     job();
                 }
                 Message::Terminate => {
-                    println!("Worker {} was told to terminate.", id);
+                    println!("ThreadPool| Worker {} was told to terminate.", id);
                     break;
                 }
             }
@@ -37,15 +41,14 @@ impl Worker {
     }
 }
 
-struct ThreadPool {
+pub struct ThreadPool {
     workers: Vec<Worker>,
     sender: Sender<Message>,
 }
 
 impl ThreadPool {
-    fn new(size: usize) -> ThreadPool {
+    pub fn new(size: usize) -> ThreadPool {
         assert!(size > 0);
-
         let (sender, receiver) = channel();
         let receiver = Arc::new(Mutex::new(receiver));
 
@@ -58,7 +61,7 @@ impl ThreadPool {
         ThreadPool { workers, sender }
     }
 
-    fn execute<F>(&self, f: F)
+    pub fn execute<F>(&self, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
@@ -69,33 +72,15 @@ impl ThreadPool {
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        println!("Sending terminate message to all workers.");
-
         for _ in &self.workers {
             self.sender.send(Message::Terminate).unwrap();
         }
 
-        println!("Shutting down all workers.");
-
         for worker in &mut self.workers {
-            println!("Shutting down worker {}", worker.id);
+            println!("ThreadPool| Shutting down worker {}", worker.id);
             if let Some(thread) = worker.thread.take() {
                 thread.join().unwrap();
             }
         }
     }
-}
-
-fn main() {
-    let pool = ThreadPool::new(4);
-
-    for i in 0..8 {
-        pool.execute(move || {
-            println!("Job {} started", i);
-            thread::sleep(std::time::Duration::from_secs(1));
-            println!("Job {} finished", i);
-        });
-    }
-
-    // The pool will be dropped here, and all threads will be properly cleaned up
 }
