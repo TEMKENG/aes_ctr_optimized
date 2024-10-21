@@ -29,7 +29,6 @@ const SBOX: [u8; 256] = [
 ];
 
 const BLOCK_SIZE: usize = 16; // AES block size
-const CHUNK_SIZE: usize = 1_048_576 * 4; //  < 1 MB pro thread
 
 /// Encrypt a chunk in CTR mode (mock implementation)
 fn process_chunk(chunks: &mut [u8], keys: &[u8], counter: &[u8], nr: usize, starting_block: u64) {
@@ -145,10 +144,22 @@ fn aes_v2(mut stage: &mut [u8], keys: &[u8], nr: usize) {
 #[inline]
 fn shift_rows_v3(stage: &mut [u8]) {
     stage.copy_from_slice(&mut [
-        SBOX[stage[0] as usize] , SBOX[stage[1] as usize] , SBOX[stage[2] as usize] , SBOX[stage[3] as usize] , // 1. row
-        SBOX[stage[5] as usize] , SBOX[stage[6] as usize] , SBOX[stage[7] as usize] , SBOX[stage[4] as usize] , // 2. row
-        SBOX[stage[10]as usize] , SBOX[stage[11]as usize] , SBOX[stage[8] as usize] , SBOX[stage[9] as usize] , // 3. row
-        SBOX[stage[15]as usize] , SBOX[stage[12]as usize] , SBOX[stage[13]as usize] , SBOX[stage[14]as usize] , // 4. row
+        SBOX[stage[0] as usize],
+        SBOX[stage[1] as usize],
+        SBOX[stage[2] as usize],
+        SBOX[stage[3] as usize], // 1. row
+        SBOX[stage[5] as usize],
+        SBOX[stage[6] as usize],
+        SBOX[stage[7] as usize],
+        SBOX[stage[4] as usize], // 2. row
+        SBOX[stage[10] as usize],
+        SBOX[stage[11] as usize],
+        SBOX[stage[8] as usize],
+        SBOX[stage[9] as usize], // 3. row
+        SBOX[stage[15] as usize],
+        SBOX[stage[12] as usize],
+        SBOX[stage[13] as usize],
+        SBOX[stage[14] as usize], // 4. row
     ]);
 }
 
@@ -202,6 +213,8 @@ pub fn handle_aes_ctr_command(
     iv_bytes: Vec<u8>,
     input_file_path: PathBuf,
     output_file_path: PathBuf,
+    number_thread: u64, //Anzahl von Thread.
+    chunk_size: usize, //Quantity pro thread.
 ) {
     println!("\n### Dummy printing ...");
     println!(" - command           = {}", command);
@@ -221,8 +234,16 @@ pub fn handle_aes_ctr_command(
 
     let iv_bytes = Arc::new(iv_bytes);
     let keys = Arc::new(key_expansion_v2(&key_bytes, nk, nr));
+    let chunk_size = 1_048_576 * chunk_size; // chunk_size MB pro thread
 
-    let input_file = File::open(&input_file_path).expect("Failed to open input file");
+
+    let input_file = match File::open(&input_file_path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Failed to open input file: {e}");
+            return;
+        }
+    };
     let file_size = input_file.metadata().unwrap().len();
 
     let output_file = OpenOptions::new()
@@ -231,14 +252,13 @@ pub fn handle_aes_ctr_command(
         .open(&output_file_path)
         .expect("Failed to open output file");
     let writer = Arc::new(Mutex::new(BufWriter::with_capacity(
-        CHUNK_SIZE,
+        chunk_size,
         output_file,
     )));
 
-    let nr_t: u64 = 4; //Anzahl von Thread.
-    let num_chunks = (file_size as f64 / CHUNK_SIZE as f64).ceil() as usize;
-    let pool = ThreadPool::new(nr_t as usize);
-    let reader = Arc::new(Mutex::new(BufReader::with_capacity(CHUNK_SIZE, input_file)));
+    let num_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize;
+    let pool = ThreadPool::new(number_thread as usize);
+    let reader = Arc::new(Mutex::new(BufReader::with_capacity(chunk_size, input_file)));
 
     for chunk_id in 0..num_chunks {
         let keys = Arc::clone(&keys);
@@ -247,8 +267,8 @@ pub fn handle_aes_ctr_command(
         let reader = reader.clone();
 
         pool.execute(move || {
-            let mut chunk = vec![0; CHUNK_SIZE];
-            let starting_pos = chunk_id * CHUNK_SIZE;
+            let mut chunk = vec![0; chunk_size];
+            let starting_pos = chunk_id * chunk_size;
             let starting_block = (starting_pos / BLOCK_SIZE) as u64;
 
             {
@@ -262,7 +282,7 @@ pub fn handle_aes_ctr_command(
 
             let mut writer = writer.lock().unwrap();
             writer
-                .seek(SeekFrom::Start((chunk_id * CHUNK_SIZE) as u64))
+                .seek(SeekFrom::Start((chunk_id * chunk_size) as u64))
                 .unwrap();
             writer.write_all(&chunk).unwrap();
         });

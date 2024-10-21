@@ -5,6 +5,7 @@ from icecream import ic
 from datetime import datetime
 from collections import defaultdict
 
+
 os.chdir('.')
 if __name__ == '__main__':
     results = defaultdict(list)

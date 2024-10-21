@@ -26,6 +26,7 @@ impl Worker {
             match message {
                 Message::NewJob(job) => {
                     job();
+                    println!("ThreadPool| Worker {} finish job", id);
                 }
                 Message::Terminate => {
                     println!("ThreadPool| Worker {} was told to terminate.", id);

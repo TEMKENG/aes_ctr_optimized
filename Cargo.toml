@@ -2,7 +2,8 @@
 name = "aes-ctr"
 version = "0.1.0"
 authors = ["Temkeng Thibaut"]
-edition = "2018"
+edition = "2021"
+build = "build.rs"
 
 [profile.release]
 lto = true
@@ -13,3 +14,8 @@ debug = true
 structopt = "0"
 hex = "0"
 numrs = "0"
+native-dialog = "0"
+slint = "1"
+
+[build-dependencies]
+slint-build = "1"

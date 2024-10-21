@@ -1,0 +1,219 @@
+
+import { Button, AboutSlint, LineEdit, SpinBox, GridBox, StandardButton } from "std-widgets.slint";
+
+export struct Job {
+    name: string,
+    counter: int}
+
+component MyText inherits Text {
+    property <bool> active: true;
+    ta := TouchArea {
+        clicked => {
+            active = !active;
+        }
+    }
+
+    color: black;
+    font-size: 16px;
+    text: "I am a text";
+    stroke-style: TextStrokeStyle.center;
+    horizontal-alignment: TextHorizontalAlignment.center;
+    vertical-alignment: TextVerticalAlignment.center;
+    states [
+        active when !active && ta.has-hover: {
+            color: blue;
+        }
+        active-hover when active && ta.has-hover: {
+            color: green;
+        }
+        inactive when !active: {
+            color: magenta;
+        }
+    ]
+}
+component Button2 inherits Rectangle {
+    in-out property text <=> txt.text;
+    callback clicked <=> touch.clicked;
+    border-radius: root.height / 2;
+    border-width: 1px;
+    border-color: root.background.darker(25%);
+    background: touch.pressed ? #6b8282 : touch.has-hover ? #6c616c :  #456;
+    // background: navy;
+    height: txt.preferred-height * 1.33;
+    min-width: txt.preferred-width + 20px;
+    txt := Text {
+        x: (parent.width - self.width)/2 + (touch.pressed ? 2px : 0);
+        y: (parent.height - self.height)/2 + (touch.pressed ? 1px : 0);
+        color: touch.pressed ? #fff : #eee;
+        text: "Temkeng";
+    }
+    touch := TouchArea { }
+}
+
+export component MainWindow inherits Window {
+    title: @tr("AES CTR");
+//     background: blanchedalmond;
+    background: blueviolet;
+    icon: @image-url("slint_resized_30x30.png");
+    default-font-size: 18px;
+    preferred-width: 500px;
+    preferred-height: 400px;
+    default-font-weight: 44;
+    in-out property <string> input_filename: "No file selected";
+    in-out property <string> output_filename: "No file selected";
+    in-out property <string> key <=> key.text;
+    in-out property <string> nonce <=> nonce.text;
+    in-out property <int> number-of-thread <=> number-of-thread-spin.value;
+    in-out property <int> quantity-pro-thread <=> quantity-pro-thread-spin.value;
+    in-out property <[Job]> jobs: [
+        { name: "Thread 0: ", counter: 0 },
+        { name: "Thread 1: ", counter: 1 },
+        { name: "Thread 2: ", counter: 2 },
+        { name: "Thread 3: ", counter: 3 },
+    ];
+    out property <length> pad: 5px;
+
+    callback counter-fn;
+    callback run-encryption;
+    callback close-requested;
+    callback open-file-dialog(string);
+    callback update_thread_number;
+
+    VerticalLayout {
+        VerticalLayout {
+            GridBox {
+                spacing: 10px;
+                Row {
+                    Button {
+                        text: "Select Input File";
+                        clicked => {
+                            root.open-file-dialog("input-file");
+                        }
+                    }
+
+                    MyText {
+                        text: "\{root.input_filename}";
+                        wrap: word-wrap;
+                        color: white;
+                    }
+                }
+
+                Row {
+                    Button {
+                        text: "Select Output File";
+                        clicked => {
+                            root.open-file-dialog("output-file");
+                        }
+                    }
+
+                    MyText {
+                        text: "\{root.output_filename}";
+                        wrap: word-wrap;
+                        color: white;
+                    }
+                }
+
+                Row {
+                    MyText {
+                        horizontal-alignment: TextHorizontalAlignment.right;
+                        text: "Number of Thread:";
+                    }
+
+                    number-of-thread-spin := SpinBox {
+                        value: 4;
+                        maximum: 8;
+                        minimum: 1;
+                        edited => {
+                            root.update_thread_number();
+                        }
+                    }
+                }
+
+                Row {
+                    MyText {
+                        horizontal-alignment: TextHorizontalAlignment.right;
+                        text: "Quantity pro Thread (MB):";
+                    }
+
+                    quantity-pro-thread-spin := SpinBox {
+                        value: 1;
+                        maximum: 10;
+                        minimum: 1;
+                    }
+                }
+
+                Row {
+                    MyText {
+                        horizontal-alignment: TextHorizontalAlignment.right;
+                        text: "Key:";
+                    }
+
+                    key := LineEdit {
+                        text: "000102030405060708090a0b0c0d0e0f";
+                        placeholder-text: "Enter your key here e.g 123456789abcdef";
+                    }
+                }
+
+                Row {
+                    MyText {
+                        horizontal-alignment: TextHorizontalAlignment.right;
+                        text: "Nonce:";
+                    }
+
+                    nonce := LineEdit {
+                        text: "00112233445566778899aabbccddeeff";
+                        placeholder-text: "Enter your nonce here e.g 123456789abcdef";
+                    }
+                }
+
+                Row {
+                    Text {}
+                    HorizontalLayout {
+                        Button2 {
+                            text: "Encrypt/Decrypt";
+                            // col: 1;
+                            clicked => {
+                                root.run-encryption();
+                            }
+                        }
+                    }
+                }
+            }
+
+            spacing: 5px;
+            HorizontalLayout {
+                padding: 10px;
+                MyText {
+                    text: "Running Thread";
+                }
+
+                VerticalLayout {
+                    for job in jobs: HorizontalLayout {
+                        padding: 2px;
+                        MyText {
+                            text: job.name;
+                        }
+
+                        MyText {
+                            text: job.counter;
+                        }
+                    }
+                }
+            }
+        }
+
+        VerticalLayout { }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 5px;
+            padding: pad;
+            StandardButton {
+                kind: close;
+                clicked => {
+                    root.close-requested();
+                }
+            }
+        }
+    }
+}
