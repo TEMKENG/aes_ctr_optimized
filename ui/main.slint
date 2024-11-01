@@ -1,5 +1,5 @@
 
-import { Button, AboutSlint, LineEdit, SpinBox, GridBox, StandardButton } from "std-widgets.slint";
+import { Button, AboutSlint, LineEdit, SpinBox, GridBox, StandardButton, ProgressIndicator, Spinner } from "std-widgets.slint";
 
 export struct Job {
     name: string,
@@ -17,8 +17,8 @@ component MyText inherits Text {
     font-size: 16px;
     text: "I am a text";
     stroke-style: TextStrokeStyle.center;
-    horizontal-alignment: TextHorizontalAlignment.center;
     vertical-alignment: TextVerticalAlignment.center;
+    horizontal-alignment: TextHorizontalAlignment.center;
     states [
         active when !active && ta.has-hover: {
             color: blue;
@@ -31,22 +31,24 @@ component MyText inherits Text {
         }
     ]
 }
+
 component Button2 inherits Rectangle {
     in-out property text <=> txt.text;
     callback clicked <=> touch.clicked;
     border-radius: root.height / 2;
     border-width: 1px;
     border-color: root.background.darker(25%);
-    background: touch.pressed ? #6b8282 : touch.has-hover ? #6c616c :  #456;
+    background: touch.pressed ? #6b8282 : touch.has-hover ? #6c616c : #456;
     // background: navy;
     height: txt.preferred-height * 1.33;
     min-width: txt.preferred-width + 20px;
     txt := Text {
-        x: (parent.width - self.width)/2 + (touch.pressed ? 2px : 0);
-        y: (parent.height - self.height)/2 + (touch.pressed ? 1px : 0);
+        x: (parent.width - self.width) / 2 + (touch.pressed ? 2px : 0);
+        y: (parent.height - self.height) / 2 + (touch.pressed ? 1px : 0);
         color: touch.pressed ? #fff : #eee;
         text: "Temkeng";
     }
+
     touch := TouchArea { }
 }
 
@@ -55,16 +57,21 @@ export component MainWindow inherits Window {
 //     background: blanchedalmond;
     background: blueviolet;
     icon: @image-url("slint_resized_30x30.png");
-    default-font-size: 18px;
     preferred-width: 500px;
+    default-font-size: 18px;
     preferred-height: 400px;
     default-font-weight: 44;
-    in-out property <string> input_filename: "No file selected";
-    in-out property <string> output_filename: "No file selected";
+    in-out property <int> filesize: 0;
     in-out property <string> key <=> key.text;
     in-out property <string> nonce <=> nonce.text;
+    in-out property <string> status <=> status.text;
+    in-out property <string> input_filename: "No file selected";
+    in-out property <string> output_filename: "No file selected";
+    in-out property <float> progress_value <=> progress-bar.progress;
     in-out property <int> number-of-thread <=> number-of-thread-spin.value;
     in-out property <int> quantity-pro-thread <=> quantity-pro-thread-spin.value;
+    in-out property <brush> status_color <=> status.color;
+
     in-out property <[Job]> jobs: [
         { name: "Thread 0: ", counter: 0 },
         { name: "Thread 1: ", counter: 1 },
@@ -72,13 +79,15 @@ export component MainWindow inherits Window {
         { name: "Thread 3: ", counter: 3 },
     ];
     out property <length> pad: 5px;
+    in-out property <bool> is_running;
 
+    // CALLBACK
     callback counter-fn;
     callback run-encryption;
+    callback stop-encryption;
     callback close-requested;
-    callback open-file-dialog(string);
+    callback open_file_dialog(string);
     callback update_thread_number;
-
     VerticalLayout {
         VerticalLayout {
             GridBox {
@@ -87,7 +96,7 @@ export component MainWindow inherits Window {
                     Button {
                         text: "Select Input File";
                         clicked => {
-                            root.open-file-dialog("input-file");
+                            root.open_file_dialog("input-file");
                         }
                     }
 
@@ -102,7 +111,7 @@ export component MainWindow inherits Window {
                     Button {
                         text: "Select Output File";
                         clicked => {
-                            root.open-file-dialog("output-file");
+                            root.open_file_dialog("output-file");
                         }
                     }
 
@@ -167,13 +176,24 @@ export component MainWindow inherits Window {
                 }
 
                 Row {
-                    Text {}
+                    MyText {
+                        text: "Encrypt/Decrypt";
+                        horizontal-alignment: TextHorizontalAlignment.right;
+                    }
+
                     HorizontalLayout {
-                        Button2 {
-                            text: "Encrypt/Decrypt";
+                        encrypt := Button2 {
+                            text: "Start";
                             // col: 1;
                             clicked => {
                                 root.run-encryption();
+                            }
+                        }
+
+                        Button2 {
+                            text: "Stop";
+                            clicked => {
+                                root.stop-encryption();
                             }
                         }
                     }
@@ -195,25 +215,38 @@ export component MainWindow inherits Window {
                         }
 
                         MyText {
-                            text: job.counter;
+                            text: job.counter + " / " + root.filesize;
                         }
                     }
                 }
+            }
+
+            // progress_bar := ProgressIndicator {
+            progress_bar := Spinner {
+                height: 50px;
             }
         }
 
         VerticalLayout { }
 
         HorizontalLayout {
-            alignment: end;
-            spacing: 5px;
-            padding: pad;
-            StandardButton {
-                kind: close;
-                clicked => {
-                    root.close-requested();
+            status := MyText {
+                text: "";
+                color: red;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 5px;
+                padding: pad;
+                StandardButton {
+                    kind: close;
+                    clicked => {
+                        root.close-requested();
+                    }
                 }
             }
         }
+
     }
 }

@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::str;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 const RCON: [u8; 15] = [
@@ -213,8 +214,10 @@ pub fn handle_aes_ctr_command(
     iv_bytes: Vec<u8>,
     input_file_path: PathBuf,
     output_file_path: PathBuf,
-    number_thread: u64, //Anzahl von Thread.
-    chunk_size: usize, //Quantity pro thread.
+    number_thread: u64,                // Anzahl von Thread.
+    chunk_size: usize,                 // Quantity pro thread.
+    sender_ui: Sender<(usize, usize)>, // Sender from UI.
+    stop_encryption: Arc<Mutex<bool>>, // Tells if the encryption should be stop or not
 ) {
     println!("\n### Dummy printing ...");
     println!(" - command           = {}", command);
@@ -236,7 +239,6 @@ pub fn handle_aes_ctr_command(
     let keys = Arc::new(key_expansion_v2(&key_bytes, nk, nr));
     let chunk_size = 1_048_576 * chunk_size; // chunk_size MB pro thread
 
-
     let input_file = match File::open(&input_file_path) {
         Ok(file) => file,
         Err(e) => {
@@ -257,7 +259,8 @@ pub fn handle_aes_ctr_command(
     )));
 
     let num_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize;
-    let pool = ThreadPool::new(number_thread as usize);
+
+    let pool = ThreadPool::new(number_thread as usize, sender_ui, stop_encryption.clone());
     let reader = Arc::new(Mutex::new(BufReader::with_capacity(chunk_size, input_file)));
 
     for chunk_id in 0..num_chunks {

@@ -3,3 +3,8 @@
 *data
 *.exe
 *.vscode
+Cargo.lock
+aes-ctr_tests.py
+*.csv
+*.txt
+Makefile
